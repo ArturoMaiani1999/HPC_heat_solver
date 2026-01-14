@@ -1,0 +1,84 @@
+############################
+# Project-specific outputs
+############################
+# Ignore generated experiment results, keep folder via .gitkeep if you want
+experiments/results/*
+!experiments/results/.gitkeep
+
+############################
+# Python bytecode / caches
+############################
+__pycache__/
+*.py[cod]
+*$py.class
+
+############################
+# Packaging / build artifacts
+############################
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+*.whl
+
+############################
+# Virtual environments
+############################
+.venv/
+venv/
+ENV/
+env/
+.conda/
+.condarc
+
+############################
+# Test / coverage artifacts
+############################
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+test-results.xml
+*.log
+
+############################
+# Jupyter / notebooks
+############################
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+############################
+# IDEs / editors
+############################
+.vscode/
+.idea/
+*.swp
+*.swo
+
+############################
+# OS / filesystem junk
+############################
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+############################
+# Optional: local config/secrets
+############################
+.env
+.env.*
+*.pem
+*.key
+
+############################
+# Optional: profiling / traces
+############################
+*.nsys-rep
+*.qdrep
+*.sqlite
+nvprof*.txt
