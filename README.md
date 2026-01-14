@@ -1,232 +1,162 @@
 
-# heat-hpc — 2D Heat Equation (Single GPU / CPU) + Benchmarks + Visualization
+# heat-hpc — Single-device 2D Heat Solver (CPU + CUDA) + Benchmark Sweeps
 
-This repo is a reproducible HPC learning project. So far it supports:
+This repo implements an explicit 2D heat equation solver and a small benchmarking workflow to compare **CPU vs NVIDIA GPU** performance on the same code path.
 
-- A **single-device** (CPU or CUDA GPU) explicit 2D heat equation solver
-- A **benchmark sweep** that produces machine-readable outputs (CSV/JSON/NPZ)
-- A **solution “profile vs time” visualization** (centerline heatmap)
-
-> Distributed multi-node (two laptops) comes next. This README documents the repo **up to the current state**.
+What’s included at this stage:
+- Single-device solver (`cpu` or `cuda:0`)
+- Benchmark sweep script that writes machine-readable outputs (CSV/JSON/NPZ)
+- Centerline evolution visualization (profile vs time)
 
 ---
 
-## What you will get (outputs)
+## Outputs
 
-After running the benchmark you will have, under `experiments/results/`:
+After a sweep, artifacts are written to `experiments/results/`:
 
-- `bench_single.csv` — one line per run (N, steps, timing stats, file paths)
-- `*_summary.json` — machine-readable timing summary per run
+- `bench_single.csv` — one row per run (N, steps, dt, timing stats + artifact paths)
+- `*_summary.json` — per-run summary (timings and parameters)
 - `*_steps.csv` — per-step timing series (step, ms)
-- `*_centerline.npz` — solution centerline snapshots vs time (for visualization)
-- optional plots (PNG) if you run the plot script
+- `*_centerline.npz` — centerline snapshots vs time (for visualization)
 
 ---
 
-## 0) Prerequisites
+## 1) Install (Conda only)
 
-### A. Python
-- Python **3.9+** (this repo currently supports 3.9)
-
-Check:
-```bash
-python --version
-````
-
-### B. PyTorch
-
-* On CPU-only machines (macOS, typical laptops), install CPU torch.
-* On NVIDIA GPU machines (Linux/Windows), install the CUDA-enabled torch that matches your driver/CUDA setup.
-
-We do **not** pin `torch` in the project dependencies because GPU builds vary by platform.
-You install torch explicitly in your environment.
-
----
-
-## 1) Clone the repo
+From the repo root:
 
 ```bash
 git clone <YOUR_REPO_URL>
 cd HPC_heat_solver/heat-hpc
-```
+````
 
-Confirm you are in the correct folder:
-
-```bash
-ls
-# should show: pyproject.toml, src/, scripts/, README.md, ...
-```
-
----
-
-## 2) Create and activate a virtual environment
-
-### macOS / Linux
+Create and activate a conda environment (Python 3.9+):
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+conda create -n hpc python=3.10 -y
+conda activate hpc
+```
+
+Upgrade pip and install this repo in editable mode:
+
+```bash
 python -m pip install --upgrade pip
-```
-
-### Windows (PowerShell)
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-```
-
----
-
-## 3) Install the package (editable) + dev tools
-
-From the `heat-hpc/` directory:
-
-```bash
 pip install -e ".[dev]"
 ```
 
-This installs the local package plus dev tools (pytest, etc.).
-If you see a Python version error, your interpreter is too old for the `requires-python` constraint.
+### Install PyTorch
 
----
-
-## 4) Install PyTorch
-
-### CPU-only (works on macOS)
+#### CPU-only machine
 
 ```bash
 pip install torch
 ```
 
-### NVIDIA GPU machine
+#### NVIDIA GPU machine
 
-Install the correct CUDA build of torch for your platform (follow the official PyTorch install selector).
-Then verify:
+Install a CUDA-enabled PyTorch build that matches your system. Verify CUDA works:
 
 ```bash
-python -c "import torch; print(torch.__version__); print('cuda:', torch.cuda.is_available())"
+python -c "import torch; print(torch.__version__); print('cuda:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no-gpu')"
 ```
 
 ---
 
-## 5) Run the solver (CPU or GPU)
+## 2) Quick tests (CPU vs GPU)
 
-### A. Quick CPU run (works everywhere)
+Run the same configuration on CPU and GPU:
 
 ```bash
-python -m heat_hpc.solver.heat_single --N 256 --steps 50 --device cpu --benchmark
+DEVICE=cuda:0 bash scripts/run_single.sh 512 200 float32
+DEVICE=cpu    bash scripts/run_single.sh 512 200 float32
 ```
 
-Expected:
+You should see significantly lower `ms/step` on GPU for moderate/large `N`.
 
-* logs at step 1 and final step
-* a timing summary in ms/step
+---
 
-### B. Run via helper script (auto-selects CUDA if available)
+## 3) Benchmark sweep (CPU vs GPU)
+
+Run identical sweeps and save the resulting CSVs.
+
+### CPU sweep
 
 ```bash
-bash scripts/run_single.sh
+DEVICE=cpu SIZES="512 1024 2048 4096" STEPS=500 WARMUP=50 bash scripts/bench_single.sh
+cp experiments/results/bench_single.csv experiments/results/bench_single_cpu.csv
 ```
 
-Override size / steps:
+### GPU sweep
 
 ```bash
-bash scripts/run_single.sh 1024 500 float32
-```
-
-Force CPU:
-
-```bash
-DEVICE=cpu bash scripts/run_single.sh 1024 500
-```
-
-Force GPU:
-
-```bash
-DEVICE=cuda:0 bash scripts/run_single.sh 2048 1000
+DEVICE=cuda:0 SIZES="512 1024 2048 4096" STEPS=500 WARMUP=50 bash scripts/bench_single.sh
+cp experiments/results/bench_single.csv experiments/results/bench_single_gpu.csv
 ```
 
 ---
 
-## 6) Run the single-device benchmark sweep
-
-This runs multiple grid sizes and writes results to `experiments/results/`.
+## 4) Print a speedup table
 
 ```bash
-bash scripts/bench_single.sh
+python - <<'PY'
+import csv
+
+def load(path):
+    out = {}
+    with open(path, newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            N = int(row["N"])
+            out[N] = float(row["ms_mean"])
+    return out
+
+cpu = load("experiments/results/bench_single_cpu.csv")
+gpu = load("experiments/results/bench_single_gpu.csv")
+
+Ns = sorted(set(cpu) & set(gpu))
+print("N\tCPU ms/step\tGPU ms/step\tSpeedup (CPU/GPU)")
+for N in Ns:
+    c = cpu[N]
+    g = gpu[N]
+    print(f"{N}\t{c:.4f}\t\t{g:.4f}\t\t{c/g:.2f}x")
+PY
 ```
-
-Defaults:
-
-* sizes: `512 1024 2048 4096`
-* steps: `200`
-* dtype: `float32`
-* device: auto (cuda if available else cpu)
-
-Override defaults:
-
-```bash
-SIZES="256 512 1024" STEPS=300 DEVICE=cpu bash scripts/bench_single.sh
+getting output:
 ```
-
-Output:
-
-* `experiments/results/bench_single.csv`
-* per-run JSON/CSV/NPZ artifacts
-
+N       CPU ms/step     GPU ms/step     Speedup (CPU/GPU)
+512     0.8444          0.0471          17.93x
+1024    1.2711          0.0658          19.33x
+2048    5.5949          0.3895          14.37x
+4096    56.8833         3.3984          16.74x
+```
 ---
 
-## 7) Visualize solution profile vs time (centerline heatmap)
+## 5) Visualize solution profile vs time (centerline heatmap)
 
-The benchmark produces files like:
+Pick a generated NPZ file, for example:
 
 ```
-experiments/results/single_cpu_float32_N512_S200_centerline.npz
+python -m heat_hpc.solver.heat_single \
+  --N 2048 --steps 3000 --device cuda:0 --dtype float32 --benchmark \
+  --centerline_every 10 \
+  --out_centerline_npz experiments/results/gpu_N2048_S3000_centerline.npz \
+  --out_step_csv experiments/results/gpu_N2048_S3000_steps.csv \
+  --out_json experiments/results/gpu_N2048_S3000_summary.json
 ```
 
-Plot it:
+Plot:
 
 ```bash
 python scripts/plot_centerline.py \
-  experiments/results/single_cpu_float32_N512_S200_centerline.npz \
-  --out experiments/results/centerline_N512.png
-```
-
-This produces a heatmap where:
-
-* x-axis: spatial index along the center row
-* y-axis: time snapshots (every K steps)
-* color: temperature value `u`
-
----
-
-## Repository layout (current)
-
-```
-src/heat_hpc/solver/heat_single.py        single-device solver (CPU or CUDA)
-src/heat_hpc/solver/kernels.py            5-point stencil update
-scripts/run_single.sh                     run helper (auto device select)
-scripts/bench_single.sh                   benchmark sweep producing CSV/JSON/NPZ
-scripts/plot_centerline.py                visualization of centerline vs time
-experiments/results/                      outputs (gitignored except .gitkeep)
+  experiments/results/gpu_N2048_S3000_centerline.npz \
+  --out experiments/results/gpu_N2048_S3000_centerline.png
 ```
 
 ---
 
-## Notes and common issues
+## Notes
 
-### You ran `pip install -e .` from the wrong directory
+* Make sure you run install commands inside `heat-hpc/` (where `pyproject.toml` lives).
+* On NVIDIA machines, confirm `nvidia-smi` works and that your torch build is CUDA-enabled.
+* `experiments/results/` is intended for generated outputs and should be gitignored.
 
-Make sure you are inside `heat-hpc/` (the directory that contains `pyproject.toml`).
-
-### CUDA not available
-
-On macOS, `torch.cuda.is_available()` will typically be false (expected).
-Use `--device cpu`.
-
-On NVIDIA machines, ensure:
-
-* `nvidia-smi` works
-* your torch build supports CUDA
