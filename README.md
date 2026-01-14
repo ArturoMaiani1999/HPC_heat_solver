@@ -1,18 +1,35 @@
+# HPC Heat Solver — CPU/GPU Stencil + Benchmarks + MPI (Two Machines)
 
-# heat-hpc — Single-device 2D Heat Solver (CPU + CUDA) + Benchmark Sweeps
+This repo is a didactic HPC project built around the **2D heat equation** (explicit 5-point stencil).
+It is organized in layers so you can teach:
 
-This repo implements an explicit 2D heat equation solver and a small benchmarking workflow to compare **CPU vs NVIDIA GPU** performance on the same code path.
+1) **Single-device performance** (CPU vs CUDA GPU)  
+2) **Benchmarking & profiling outputs** (CSV/JSON/NPZ)  
+3) **Multi-node execution with OpenMPI** (task-parallel sweeps that scale even on Wi-Fi)
 
-What’s included at this stage:
-- Single-device solver (`cpu` or `cuda:0`)
-- Benchmark sweep script that writes machine-readable outputs (CSV/JSON/NPZ)
-- Centerline evolution visualization (profile vs time)
+> Note: true *domain decomposition* (halo exchange every timestep) is network-latency sensitive and will be added later as an advanced module. On Wi-Fi it often does not speed up; MPI task-parallel workloads do.
+
+---
+
+## Repository layout (didactic)
+
+- `basics/` — minimal “teaching scripts” (single-file demos, progressively introduced)
+- `lessons/` — lesson notes / exercises (markdown)
+- `src/heat_hpc/` — reusable Python package (the “real” implementation)
+- `scripts/` — runnable wrappers (single-device, distributed, visualization)
+  - `scripts/single/` — single-device run + sweeps
+  - `scripts/dist/` — OpenMPI scripts
+  - `scripts/viz/` — plotting helpers
+- `experiments/results/` — generated outputs (should be gitignored)
+
+Backwards compatibility:
+- `scripts/run_single.sh`, `scripts/bench_single.sh`, `scripts/plot_centerline.py` remain as wrappers.
 
 ---
 
 ## Outputs
 
-After a sweep, artifacts are written to `experiments/results/`:
+Runs write artifacts to `experiments/results/`:
 
 - `bench_single.csv` — one row per run (N, steps, dt, timing stats + artifact paths)
 - `*_summary.json` — per-run summary (timings and parameters)
@@ -21,23 +38,23 @@ After a sweep, artifacts are written to `experiments/results/`:
 
 ---
 
-## 1) Install (Conda only)
+## 1) Install (Conda)
 
 From the repo root:
 
 ```bash
 git clone <YOUR_REPO_URL>
-cd HPC_heat_solver/heat-hpc
+cd HPC_heat_solver
 ````
 
-Create and activate a conda environment (Python 3.9+):
+Create and activate a conda environment:
 
 ```bash
 conda create -n hpc python=3.10 -y
 conda activate hpc
 ```
 
-Upgrade pip and install this repo in editable mode:
+Install this repo in editable mode:
 
 ```bash
 python -m pip install --upgrade pip
@@ -54,7 +71,7 @@ pip install torch
 
 #### NVIDIA GPU machine
 
-Install a CUDA-enabled PyTorch build that matches your system. Verify CUDA works:
+Install a CUDA-enabled PyTorch build that matches your system. Verify CUDA:
 
 ```bash
 python -c "import torch; print(torch.__version__); print('cuda:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no-gpu')"
@@ -106,8 +123,7 @@ def load(path):
     with open(path, newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            N = int(row["N"])
-            out[N] = float(row["ms_mean"])
+            out[int(row["N"])] = float(row["ms_mean"])
     return out
 
 cpu = load("experiments/results/bench_single_cpu.csv")
@@ -121,7 +137,9 @@ for N in Ns:
     print(f"{N}\t{c:.4f}\t\t{g:.4f}\t\t{c/g:.2f}x")
 PY
 ```
-getting output:
+
+Example output:
+
 ```
 N       CPU ms/step     GPU ms/step     Speedup (CPU/GPU)
 512     0.8444          0.0471          17.93x
@@ -129,13 +147,14 @@ N       CPU ms/step     GPU ms/step     Speedup (CPU/GPU)
 2048    5.5949          0.3895          14.37x
 4096    56.8833         3.3984          16.74x
 ```
+
 ---
 
 ## 5) Visualize solution profile vs time (centerline heatmap)
 
-Pick a generated NPZ file, for example:
+Generate a centerline NPZ (example on GPU):
 
-```
+```bash
 python -m heat_hpc.solver.heat_single \
   --N 2048 --steps 3000 --device cuda:0 --dtype float32 --benchmark \
   --centerline_every 10 \
@@ -154,9 +173,107 @@ python scripts/plot_centerline.py \
 
 ---
 
+# Multi-node (Two Machines) with OpenMPI
+
+## 6) Goal: make two GPU machines useful on Wi-Fi
+
+The most effective multi-node pattern over Wi-Fi is **task parallelism**:
+run many independent simulations (parameter sweeps) across machines and aggregate results.
+This scales well because communication is infrequent (start/end), unlike halo exchange every timestep.
+
+---
+
+## 7) One-time OpenMPI setup (on BOTH machines)
+
+### A) Passwordless SSH from machine A → machine B
+
+On machine A:
+
+```bash
+ssh-keygen -t ed25519 -C "hpc" -N "" -f ~/.ssh/id_ed25519
+ssh-copy-id <user>@192.168.1.108
+```
+
+Test:
+
+```bash
+ssh <user>@192.168.1.108 hostname
+```
+
+### B) Install OpenMPI
+
+On both machines:
+
+```bash
+sudo apt update
+sudo apt install -y openmpi-bin libopenmpi-dev
+```
+
+### C) Install mpi4py in the conda env
+
+On both machines:
+
+```bash
+conda activate hpc
+pip install mpi4py
+```
+
+---
+
+## 8) Hostfile (machine A)
+
+Create a hostfile on machine A (edit IPs if needed):
+
+```bash
+cat > ~/mpi_hosts <<'EOF'
+192.168.1.101 slots=1
+192.168.1.108 slots=1
+EOF
+```
+
+Smoke test:
+
+```bash
+mpirun -np 2 --hostfile ~/mpi_hosts --map-by slot hostname
+```
+
+---
+
+## 9) Run an MPI sweep (task-parallel)
+
+Once `heat_hpc.dist.mpi_sweep` and the launcher script are in place:
+
+```bash
+conda activate hpc
+bash scripts/dist/run_mpi_sweep.sh
+```
+
+Customize:
+
+```bash
+SIZES="1024,2048,4096" STEPS=1000 DEVICE=cuda:0 bash scripts/dist/run_mpi_sweep.sh
+```
+
+Outputs:
+
+* Per-run artifacts under `experiments/results/`
+* Aggregated CSV: `experiments/results/mpi_sweep.csv`
+
+---
+
 ## Notes
 
-* Make sure you run install commands inside `heat-hpc/` (where `pyproject.toml` lives).
-* On NVIDIA machines, confirm `nvidia-smi` works and that your torch build is CUDA-enabled.
+* Ensure both machines have:
+
+  * the repo checked out
+  * the same conda env name (`hpc`) with CUDA-enabled torch installed
+* On NVIDIA machines:
+
+  * confirm `nvidia-smi` works
+  * confirm `torch.cuda.is_available()` is `True`
 * `experiments/results/` is intended for generated outputs and should be gitignored.
 
+```
+
+If you want, I can also add a small “Troubleshooting OpenMPI” section (common errors: SSH, PATH/conda activation under mpirun, differing repo paths, firewall/port 5201 for iperf).
+```
